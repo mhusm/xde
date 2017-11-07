@@ -26,6 +26,7 @@ require('codemirror/mode/css/css');
 require('codemirror/mode/clike/clike');
 require('codemirror/mode/xml/xml');
 require('codemirror/mode/htmlmixed/htmlmixed');
+require('codemirror/mode/markdown/markdown');
 require('codemirror/keymap/sublime.js');
 require('codemirror/addon/display/panel');
 require('codemirror/addon/edit/matchbrackets');
@@ -74,6 +75,10 @@ function log(...args) {
 	}
 }
 
+function _error(...args) {
+	console.error(...args);
+}
+
 class Room extends EventEmitter {
 
 	constructor() {
@@ -99,7 +104,7 @@ class Room extends EventEmitter {
 			try {
 				message = CircularJSON.parse(event.data);
 			} catch (e) {
-				console.error('Error parsing JSON.', e.message, event.data);
+				_error('Error parsing JSON.', e.message, event.data);
 				return;
 			}
 			this._emit(...message);
@@ -159,12 +164,12 @@ class Room extends EventEmitter {
 		try {
 			json = CircularJSON.stringify(args);
 		} catch (e) {
-			console.error('Error creating JSON.', e.message);
+			_error('Error creating JSON.', e.message);
 			return;
 		}
 		this.ws.send(json, (error) => {
 			if (error) {
-				console.error(error);
+				_error(error);
 			}
 		});
 	}
@@ -341,7 +346,7 @@ class Sidebar {
 				fileManager.toggleDirectory(directory, true);
 			}
 		});
-		this.filesView.addEventListener('click', (event) => {
+		fileManager.rootFile.view.addEventListener('click', (event) => {
 			var file = fileManager.fileForView(event.target);
 			if (file.children) {
 				fileManager.toggleDirectory(file);
@@ -349,12 +354,12 @@ class Sidebar {
 				editor.open(file);
 			}
 		});
-		this.bindContextMenu('.file, #files', (target) => fileManager.fileForView(target), [
+		this.bindContextMenu('.file a, #files', (target) => (fileManager.fileForView(target) || fileManager.rootFile), [
 			['Preview', (file) => { preview.open(file.doc.data.path); }, (file) => { return {enable: file && !file.children}; }],
 			null,
 			['New File', (file) => { fileManager.createFileInteractive(file, (path, error) => {
 				if (error) {
-					console.error(error);
+					alert(error);
 				} else {
 					setTimeout(() => {
 						editor.open(path);
@@ -363,12 +368,12 @@ class Sidebar {
 			}); }],
 			['New Folder', (file) => { fileManager.createFolderInteractive(file, (path, error) => {
 				if (error) {
-					console.error(error);
+					alert(error);
 				}
 			}); }],
 			['Rename', (file) => { fileManager.moveFileInteractive(file, (error) => {
 				if (error) {
-					console.error(error);
+					alert(error);
 				}
 			}); }, (file) => { return {enable: file && !file.children}; }],
 			['Delete', (file) => {
@@ -377,7 +382,7 @@ class Sidebar {
 				}
 				fileManager.deleteFile(file, (error) => {
 					if (error) {
-						console.error(error);
+						alert(error);
 					}
 				});
 			}, (file) => { return {enable: file && (!file.children || file.children.length === 0)}; }]
@@ -406,12 +411,12 @@ class Sidebar {
 		var menu = document.createElement('ul');
 		menu.className ='dropdown-menu';
 		for (let item of menuItems) {
-			var $item = document.createElement('li');
+			var itemView = document.createElement('li');
 			if (item === null) {
-				$item.className = 'divider';
+				itemView.className = 'divider';
 			} else {
-				$item.innerHTML = `<a href="#">${item[0]}</a>`;
-				$item.addEventListener('click', (event) => {
+				itemView.innerHTML = `<a href="#">${item[0]}</a>`;
+				itemView.addEventListener('click', (event) => {
 					menu.parentNode.removeChild(menu);
 					target.classList.remove('clicked');
 					if (!event.target.classList.contains('disabled')) {
@@ -419,7 +424,7 @@ class Sidebar {
 					}
 				});
 			}
-			menu.appendChild($item);
+			menu.appendChild(itemView);
 		}
 		document.addEventListener('contextmenu', (event) => {
 			target = event.target.closest(selector);
@@ -427,11 +432,10 @@ class Sidebar {
 				return;
 			}
 			context = contextFn(target);
-			if (target !== fileManager.rootFile.view) {
+			if (target.tagName === 'A') {
 				target.classList.add('clicked');
 			}
-			$(menu).children().removeClass('disabled');
-			$(menu).children().filter((i, child) => {
+			var disable = (i, child) => {
 				var item = menuItems[i];
 				if (item === null || item.length < 3) {
 					return false;
@@ -439,10 +443,18 @@ class Sidebar {
 				var validate = item[2](context, child);
 				if (typeof(validate) === 'object') {
 					if (validate.hasOwnProperty('check')) {
-						var a = $(child).children('a');
-						a.children('span').remove();
+						var checkImage = child.getElementsByClassName('fa-check')[0];
 						if (validate.check) {
-							a.prepend('<span class="fa fa-check"></span>');
+							if (!checkImage) {
+								var a = child.getElementsByTagName('a')[0];
+								checkImage = document.createElement('span');
+								checkImage.className = 'fa fa-check';
+								a.insertBefore(checkImage, a.firstChild);
+							}
+						} else {
+							if (checkImage) {
+								checkImage.parentNode.removeChild(checkImage);
+							}
 						}
 					}
 					if (validate.hasOwnProperty('enable')) {
@@ -450,7 +462,11 @@ class Sidebar {
 					}
 				}
 				return validate;
-			}).addClass('disabled');
+			};
+			for (var i = 0; i < menuItems.length; i += 1) {
+				var child = menu.childNodes[i];
+				child.classList.toggle('disabled', disable(i, child));
+			}
 			menu.style.display = 'block';
 			menu.style.left = `${event.pageX}px`;
 			menu.style.top = `${event.pageY}px`;
@@ -563,6 +579,7 @@ class Editor {
 			sidebar.saveButton.className = 'fa fa-save';
 		});
 		this.imageViewer = document.getElementById('imageviewer');
+		this.imageViewer.controller = this;
 	}
 
 //	filesDidChange(action, files) {
@@ -676,7 +693,7 @@ class Editor {
 				if (!settings.values.touch) {
 					codeMirror.getInputField().focus();
 				}
-				var modes = {html: 'htmlmixed', js: 'javascript', json: 'application/json', css: 'css', php: 'application/x-httpd-php'};
+				var modes = {html: 'htmlmixed', js: 'javascript', json: 'application/json', css: 'css', php: 'application/x-httpd-php', md: 'text/x-markdown'};
 				codeMirror.setOption('mode', modes[Path.extname(path).substr(1)]);
 				codeMirror.setOption('lint', false);
 				codeMirror.setOption('lint', true);
@@ -699,19 +716,21 @@ class Editor {
 			if (file === sidebar.activeObject) {
 				finish();
 			} else {
-				activateView(this.view, {sidebar: file.view});
+				this.activeObjects = {sidebar: file.view};
+				activateView(this.view);
 				this.showToolbar(settings.values.touch || options.stack !== undefined);
 				this.showStatusbar(true);
 				this.shareDBCodeMirror.attachDoc(doc, (error) => {
 					if (error) {
-						console.error(error);
+						alert(error);
 						return;
 					}
 					finish();
 				});
 			}
 		} else if (type === 'image') {
-			activateView(this.imageViewer, {sidebar: file.view});
+			this.activeObjects = {sidebar: file.view};
+			activateView(this.imageViewer);
 			this.imageViewer.style.backgroundImage = `url(${preview.url + path}), repeating-linear-gradient(45deg, rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.1) 10px, rgba(255, 255, 255, 0.1) 10px, rgba(255, 255, 255, 0.1) 20px)`;
 		}
 		if (bookmarks.history.length === 0 || path !== bookmarks.history[0]) {
@@ -909,7 +928,8 @@ class Preview {
 				path = 'index.html';
 				this.view.src = this.url + path;
 			}
-			activateView(this.view, {topbar: topbar.previewButton, sidebar: sidebar.previewButton});
+			this.activeObjects = {topbar: topbar.previewButton, sidebar: sidebar.previewButton};
+			activateView(this.view);
 		}
 		if (path) {
 			this.last = {path, clientName};
@@ -1038,6 +1058,7 @@ class JSConsole extends JavaScriptConsole {
 				editor.open(fileref.fileName, {selection: {line: fileref.lineNumber - 1, ch: fileref.columnNumber - 1}}, room.getClientNameByType(false));
 			}
 		});
+		this.view.controller = this;
 		room.on('init', (data) => {
 			for (var client of room.clients) {
 				this.setColor(client.name, client.color);
@@ -1083,7 +1104,8 @@ class JSConsole extends JavaScriptConsole {
 	}
 
 	open() {
-		activateView(this.view, {topbar: topbar.consoleButton, sidebar: sidebar.consoleButton});
+		this.activeObjects = {topbar: topbar.consoleButton, sidebar: sidebar.consoleButton};
+		activateView(this.view);
 		this.scrollToBottom();
 	}
 
@@ -1153,7 +1175,8 @@ class Search {
 		if (clientName !== undefined && clientName !== settings.values.name) {
 			room.command(clientName, 'openView', 'search', {options});
 		} else {
-			activateView(this.view, {topbar: topbar.searchButton, sidebar: sidebar.searchButton});
+			this.activeObjects = {topbar: topbar.searchButton, sidebar: sidebar.searchButton};
+			activateView(this.view);
 			if (!options || !options.search) {
 				return;
 			}
@@ -1205,18 +1228,18 @@ class Search {
 			};
 			for (var result of results) {
 				var {index, path} = result;
-				var $file = `<a href="#" class="file">${(replace ? '<input type="checkbox" class="btn btn-default" checked />' : '')}<span class="fa fa-caret-down"></span>${(index !== undefined ? parseMatch(path, index, search) : path)}</a>`;
-				var $matches = '';
+				var fileView = `<a href="#" class="file">${(replace ? '<input type="checkbox" class="btn btn-default" checked />' : '')}<span class="fa fa-caret-down"></span>${(index !== undefined ? parseMatch(path, index, search) : path)}</a>`;
+				var matches = '';
 				if (result.matches) {
 					for (var match of result.matches) {
 						var {string, line, ch, indexPath} = match;
-						$matches += `<a href="#" data-index-path="${indexPath}" class="line">${(replace ? '<input type="checkbox" class="btn btn-default" checked />' : '')}<span class="number">${line + 1}</span>${parseMatch(string, ch, search)}</a>`;
+						matches += `<a href="#" data-index-path="${indexPath}" class="line">${(replace ? '<input type="checkbox" class="btn btn-default" checked />' : '')}<span class="number">${line + 1}</span>${parseMatch(string, ch, search)}</a>`;
 					}
 				}
-				$matches = `<div class="children expanded">${$matches}</div>`;
-				var matches = document.createElement('div');
-				matches.innerHTML = $file + $matches;
-				resultsView.appendChild(matches);
+				matches = `<div class="children expanded">${matches}</div>`;
+				var matchesView = document.createElement('div');
+				matchesView.innerHTML = fileView + matches;
+				resultsView.appendChild(matchesView);
 			}
 			this.view.appendChild(resultsView);
 			this.resultsView = resultsView;
@@ -1299,7 +1322,8 @@ class Bookmarks {
 				}
 			}
 		}
-		activateView(this.view, {topbar: topbar.bookmarksButton});
+		this.activeObjects = {topbar: topbar.bookmarksButton};
+		activateView(this.view);
 	}
 
 	parseBookmark(path) {
@@ -1390,14 +1414,15 @@ class Outline {
 			outline = bookmarks.history[0];
 		}
 		this.elementsView.innerHTML = '';
-		activateView(this.view, {topbar: topbar.outlineButton});
+		this.activeObjects = {topbar: topbar.outlineButton};
+		activateView(this.view);
 		if (!outline) {
 			this.elementsView.appendChild(this.emptyOutline);
 		} else if (typeof(outline) === 'string') {
 			var doc = fileManager.fileAtPath(outline).doc;
 			doc.fetch((error) => {
 				if (error) {
-					console.error(error);
+					alert(error);
 				}
 				this.entityMap = {};
 				this.nextEntityId = 1;
@@ -1445,7 +1470,7 @@ class Outline {
 		delete this.nextEntityId;
 		delete this.previewTree;
 	}
-	
+
 	selectRow(row) {
 		if (this.selectedRow) {
 			this.selectedRow.classList.remove('selected');
@@ -1453,7 +1478,7 @@ class Outline {
 		this.selectedRow = row;
 		row.classList.add('selected');
 	}
-	
+
 	updatePreviewTree(updates) {
 		this.previewTree.ingestUpdates(updates);
 	}
@@ -1635,14 +1660,14 @@ class Settings {
 				room.updateClient(this.values, 'name', newName);
 			}
 		});
-		for (var button of Array.from(document.getElementById('split-setting').getElementsByTagName('button'))) {
-			button.addEventListener('click', (event) => {
-				var target = event.currentTarget;
-				if (!target.classList.contains('active')) {
-					this.split(target.dataset.split);
-				}
-			});
-		}
+		this.splitSegmentedControl = document.getElementById('split-setting');
+		this.splitSegmentedControl.addEventListener('click', (event) => {
+			var target = event.target.closest('button');
+			if (target) {
+				this.split(target.dataset.split);
+			}
+		});
+		this.selectedSplitControlSegment = this.splitSegmentedControl.querySelector('[data-split="no"]')
 		this.fullscreenButton = document.getElementById('fullscreen-setting');
 		this.fullscreenButton.addEventListener('click', (event) => {
 			if (document.webkitFullscreenElement) {
@@ -1721,7 +1746,7 @@ class Settings {
 			mainView.innerHTML = '';
 			mainView.appendChild(splitView);
 			$(splitView).splitPane();
-		} else {
+		} else if (split === 'no') {
 			var activeView = activeContainer.firstChild;
 			if (top) {
 				top.removeChild(top.firstChild);
@@ -1735,12 +1760,12 @@ class Settings {
 			mainView.innerHTML = '';
 			mainView.appendChild(activeView);
 			activeContainer = mainView;
+		} else {
+			return;
 		}
-		activeObjects = {};
-		if (this.view.parentNode) {
-			$('#split-setting button').removeClass('active');
-			$(`#${split}-split-setting`).addClass('active');
-		}
+		this.selectedSplitControlSegment.classList.remove('active');
+		this.selectedSplitControlSegment = this.splitSegmentedControl.querySelector(`[data-split="${split}"]`);
+		this.selectedSplitControlSegment.classList.add('active');
 	}
 
 	toggleBars(hidden) {
@@ -1764,7 +1789,8 @@ class Settings {
 	}
 
 	open() {
-		activateView(this.view, {topbar: topbar.settingsButton});
+		this.activeObjects = {topbar: topbar.settingsButton};
+		activateView(this.view);
 		document.getElementById('name-setting').value = this.values.name;
 	}
 
@@ -1778,7 +1804,8 @@ class Help {
 	}
 
 	open() {
-		activateView(this.view, {});
+		this.activeObjects = {};
+		activateView(this.view);
 	}
 
 }
@@ -1816,7 +1843,7 @@ function inputField(textField, callback) {
 }
 window.inputField = inputField;
 
-function openView(view, container, _activeObjects) {
+function openView(view, container) {
 	var oldView = container.lastElementChild;
 	if (oldView) {
 		if (oldView.controller && oldView.controller.close) {
@@ -1833,18 +1860,16 @@ function openView(view, container, _activeObjects) {
 	} else {
 		container.appendChild(view);
 	}
-	if (oldView && view !== oldView) {
-		var index = settings.values.views.map((view) => view.name).indexOf(oldView.id);
-		if (index !== -1) {
+	if (view !== oldView) {
+		var index;
+		if (oldView && (index = settings.values.views.map((view) => view.name).indexOf(oldView.id)) !== -1) {
 			settings.values.views.splice(index, 1);
 		}
 		settings.values.views.splice(0, 0, {name: view.id});
 		settings.save();
 		room.updateClient(settings.values, 'views', settings.values.views);
 	}
-	var oldActiveObjects = activeObjects[container.id];
-	activeObjects[container.id] = _activeObjects;
-	return {oldView, oldActiveObjects};
+	return oldView;
 }
 
 function openViewByName(view, args = {}) {
@@ -1872,36 +1897,44 @@ function openViewByName(view, args = {}) {
 }
 
 var ignoreActiveView = false, temporarySplit = false;
-function activateView(view, _activeObjects) {
+function activateView(view) {
 	if (temporarySplit) {
 		settings.split('no');
 		temporarySplit = false;
 	}
 	var oldContainer = view.parentNode;
-	var {oldView, oldActiveObjects} = openView(view, (oldContainer && ignoreActiveView ? oldContainer : activeContainer), _activeObjects);
+	var oldView = openView(view, (oldContainer && ignoreActiveView ? oldContainer : activeContainer));
 	if (!ignoreActiveView) {
 		if (oldContainer && oldContainer !== activeContainer) {
-			openView(oldView, oldContainer, oldActiveObjects);
+			openView(oldView, oldContainer);
 		}
-		topbar.setActiveObject(_activeObjects.topbar);
-		sidebar.setActiveObject(_activeObjects.sidebar);
+		var activeObjects = view.controller.activeObjects;
+		topbar.setActiveObject(activeObjects.topbar);
+		sidebar.setActiveObject(activeObjects.sidebar);
 	}
 	ignoreActiveView = false;
 }
 
-var activeContainer, activeObjects = {};
+var activeContainer;
 function setActiveContainer(event) {
-	var newActiveContainer;
+	var view;
 	if (document.activeElement === preview.view) {
-		newActiveContainer = preview.view.parentNode;
+		activeContainer = preview.view.parentNode;
+		view = preview.view;
 	} else if (event.target.closest) {
-		newActiveContainer = event.target.closest('#main, #left-component, #right-component, #top-component, #bottom-component');
+		var newActiveContainer = event.target.closest('#main, #left-component, #right-component, #top-component, #bottom-component');
+		if (newActiveContainer) {
+			activeContainer = newActiveContainer;
+			view = activeContainer.firstElementChild;
+			if (view == preview.view) {
+				view = activeContainer.lastElementChild;
+			}
+		}
 	}
-	if (newActiveContainer) {
-		activeContainer = newActiveContainer;
-		var activeObject = activeObjects[activeContainer.id] = {};
-		topbar.setActiveObject(activeObject.topbar);
-		sidebar.setActiveObject(activeObject.sidebar);
+	if (view) {
+		var activeObjects = view.controller.activeObjects;
+		topbar.setActiveObject(activeObjects.topbar);
+		sidebar.setActiveObject(activeObjects.sidebar);
 	}
 }
 
@@ -1911,7 +1944,7 @@ var fileManager, settings, room, editor, preview, jsConsole, search, bookmarks, 
 window.onload = (event) => {
 	fileManager = new ShareDBFileManager(connection, {verbose: debug});
 	fileManager.on('error', (error) => {
-		console.error(error);
+		_error(error);
 	});
 	document.addEventListener('focus', (event) => {
 		if (['input', 'textarea'].indexOf(event.target.tagName) !== -1) {
